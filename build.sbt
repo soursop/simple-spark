@@ -11,3 +11,5 @@ resolvers ++= Seq(
 libraryDependencies += "org.apache.spark" %% "spark-core" % "2.3.1"
 libraryDependencies += "org.apache.hadoop" % "hadoop-core" % "2.6.0-mr1-cdh5.15.0"
 //libraryDependencies += "org.apache.hadoop" % "hadoop-mapreduce-client-core" % "2.6.0-mr1-cdh5.15.0"
+
+libraryDependencies += "org.scalatest" %% "scalatest" % "3.2.0-SNAP10" % Test
