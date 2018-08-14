@@ -1,4 +1,4 @@
-package com.simple.spark
+package org.apache.spark.simple
 
 trait Partition extends Serializable  {
   /**

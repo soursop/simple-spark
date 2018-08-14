@@ -1,4 +1,4 @@
-package com.simple.spark
+package org.apache.spark.simple
 
 import org.apache.spark.internal.Logging
 

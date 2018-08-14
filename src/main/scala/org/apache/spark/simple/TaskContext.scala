@@ -1,5 +1,4 @@
-package com.simple.spark
-
+package org.apache.spark.simple
 
 object TaskContext {
   /**
@@ -33,5 +32,9 @@ object TaskContext {
       * The ID of the RDD partition that is computed by this task.
       */
     def partitionId(): Int
+    /**
+      * If the task is interrupted, throws TaskKilledException with the reason for the interrupt.
+      */
+    private[spark] def killTaskIfInterrupted(): Unit
   }
 }
