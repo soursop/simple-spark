@@ -1,23 +1,11 @@
 package org.apache.spark.simple
 
-import java.io.IOException
-import java.text.SimpleDateFormat
-import java.util.Locale
-
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.mapred.JobConf
-import org.apache.hadoop.mapred.InputSplit
-import org.apache.hadoop.mapred.InputFormat
-import org.apache.hadoop.mapred.RecordReader
-import org.apache.hadoop.mapred.Reporter
-import org.apache.spark.{Partition, SerializableWritable, SparkEnv}
-import org.apache.hadoop.mapred.lib.CombineFileSplit
+import org.apache.hadoop.mapred._
 import org.apache.hadoop.util.ReflectionUtils
-import org.apache.spark.deploy.SparkHadoopUtil
-import org.apache.spark.internal.config.IGNORE_CORRUPT_FILES
-import org.apache.spark.rdd.{HadoopPartition, HadoopRDD, InputFileBlockHolder}
 import org.apache.spark.simple.TaskContext.TaskContext
 import org.apache.spark.util.{NextIterator, SerializableConfiguration}
+import org.apache.spark.{Partition, SerializableWritable, SparkEnv}
 
 
 /**
@@ -40,22 +28,22 @@ class HadoopRDD[K, V](sc: SparkContext
                       , valueClass: Class[V]
                       , minPartitions: Int
                      ) extends RDD[(K, V)](sc) {
-    def this(sc: SparkContext
-      , conf: SparkConf
-      , inputFormatClass: Class[_ <: InputFormat[K, V]]
-      , keyClass: Class[K]
-      , valueClass: Class[V]
-      , minPartitions: Int
-    ) = {
-      this(
-        sc
-        , new SerializableConfiguration(conf.asInstanceOf[Configuration])
-        , inputFormatClass
-        , keyClass
-        , valueClass
-        , minPartitions
-      )
-    }
+  def this(sc: SparkContext
+           , conf: SparkConf
+           , inputFormatClass: Class[_ <: InputFormat[K, V]]
+           , keyClass: Class[K]
+           , valueClass: Class[V]
+           , minPartitions: Int
+          ) = {
+    this(
+      sc
+      , new SerializableConfiguration(conf.asInstanceOf[Configuration])
+      , inputFormatClass
+      , keyClass
+      , valueClass
+      , minPartitions
+    )
+  }
 
   /**
     * Configuration's constructor is not threadsafe (see SPARK-1097 and HADOOP-10456).
@@ -76,24 +64,29 @@ class HadoopRDD[K, V](sc: SparkContext
 
       private val inputFormat = getInputFormat(jobConf)
 
-      val reader: RecordReader[K, V] =
-      inputFormat.getRecordReader(split.inputSplit.value, jobConf, Reporter.NULL)
+      var reader: RecordReader[K, V] =
+        inputFormat.getRecordReader(split.inputSplit.value, jobConf, Reporter.NULL)
 
       private val key: K = if (reader == null) null.asInstanceOf[K] else reader.createKey()
       private val value: V = if (reader == null) null.asInstanceOf[V] else reader.createValue()
 
       override protected def getNext(): (K, V) = {
         finished = !reader.next(key, value)
-//        if (!finished) {
-//          inputMetrics.incRecordsRead(1)
-//        }
-//        if (inputMetrics.recordsRead % SparkHadoopUtil.UPDATE_INPUT_METRICS_INTERVAL_RECORDS == 0) {
-//          updateBytesRead()
-//        }
         (key, value)
       }
 
-      override protected def close(): Unit = ???
+      override protected def close(): Unit = {
+        if (reader != null) {
+          try {
+            reader.close()
+          } catch {
+            case e: Exception =>
+              logWarning("Exception in RecordReader.close()", e)
+          } finally {
+            reader = null
+          }
+        }
+      }
     }
     new InterruptibleIterator[(K, V)](context, iter)
   }
