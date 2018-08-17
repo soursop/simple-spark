@@ -4,6 +4,7 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.mapred._
 import org.apache.hadoop.util.ReflectionUtils
 import org.apache.spark.simple.TaskContext.TaskContext
+import org.apache.spark.simple.rdd.RDD
 import org.apache.spark.util.{NextIterator, SerializableConfiguration}
 import org.apache.spark.{Partition, SerializableWritable, SparkEnv}
 
@@ -23,6 +24,7 @@ private[spark] class HadoopPartition(rddId: Int, override val index: Int, s: Inp
 
 class HadoopRDD[K, V](sc: SparkContext
                       , conf: SerializableConfiguration
+                      , initLocalJobConfFuncOpt: Option[JobConf => Unit]
                       , inputFormatClass: Class[_ <: InputFormat[K, V]]
                       , keyClass: Class[K]
                       , valueClass: Class[V]
@@ -30,6 +32,7 @@ class HadoopRDD[K, V](sc: SparkContext
                      ) extends RDD[(K, V)](sc) {
   def this(sc: SparkContext
            , conf: SparkConf
+           , initLocalJobConfFuncOpt: Option[JobConf => Unit]
            , inputFormatClass: Class[_ <: InputFormat[K, V]]
            , keyClass: Class[K]
            , valueClass: Class[V]
@@ -38,6 +41,7 @@ class HadoopRDD[K, V](sc: SparkContext
     this(
       sc
       , new SerializableConfiguration(conf.asInstanceOf[Configuration])
+      , initLocalJobConfFuncOpt
       , inputFormatClass
       , keyClass
       , valueClass

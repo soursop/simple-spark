@@ -2,9 +2,6 @@ package org.apache.spark.simple
 
 import java.util.concurrent.ConcurrentHashMap
 
-import org.apache.hadoop.conf.Configuration
-import org.apache.spark.SparkConf
-import org.apache.spark.SparkConf.logDeprecationWarning
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{ConfigEntry, ConfigProvider, ConfigReader, SparkConfigProvider}
 
@@ -54,9 +51,29 @@ class SparkConf(loadDefaults: Boolean) extends Cloneable with Logging with Seria
   override def clone: SparkConf = {
     val cloned = new SparkConf(false)
     settings.entrySet().asScala.foreach {
-      e => cloned.set(e.getKey(), e.getValue(), true)
+      e => cloned.set(e.getKey(), e.getValue())
     }
     cloned
+  }
+
+  /** Get a parameter as an Option */
+  def getOption(key: String): Option[String] = {
+    Option(settings.get(key))
+  }
+
+  /** Get a parameter; throws a NoSuchElementException if it's not set */
+  def get(key: String): String = {
+    getOption(key).getOrElse(throw new NoSuchElementException(key))
+  }
+
+  /** Get a parameter, falling back to a default if not set */
+  def get(key: String, defaultValue: String): String = {
+    getOption(key).getOrElse(defaultValue)
+  }
+
+  /** Get all parameters as a list of pairs */
+  def getAll: Array[(String, String)] = {
+    settings.entrySet().asScala.map(x => (x.getKey, x.getValue)).toArray
   }
 
 }
