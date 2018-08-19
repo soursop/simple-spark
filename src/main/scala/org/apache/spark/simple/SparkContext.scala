@@ -13,7 +13,11 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.simple.rdd.{RDD, RDDOperationScope}
 import org.apache.spark.simple.deploy.SparkHadoopUtil
 import org.apache.spark.scheduler.TaskScheduler
-import org.apache.spark.util.{ClosureCleaner, SerializableConfiguration}
+import org.apache.spark.simple.TaskContext.TaskContext
+import org.apache.spark.simple.scheduler.DAGScheduler
+import org.apache.spark.util.{CallSite, ClosureCleaner, SerializableConfiguration, Utils}
+
+import scala.reflect.ClassTag
 
 class SparkContext(config: SparkConf) extends Logging {
 
@@ -27,6 +31,7 @@ class SparkContext(config: SparkConf) extends Logging {
   private var _conf: SparkConf = _
   private var _hadoopConfiguration: Configuration = _
   private var _taskScheduler: TaskScheduler = _
+  @volatile private var _dagScheduler: DAGScheduler = _
 
   try {
     _conf = config.clone()
@@ -45,6 +50,10 @@ class SparkContext(config: SparkConf) extends Logging {
   private[spark] def conf: SparkConf = _conf
   private[spark] def taskScheduler: TaskScheduler = _taskScheduler
   private[spark] var checkpointDir: Option[String] = None
+  private[spark] def dagScheduler: DAGScheduler = _dagScheduler
+  private[spark] def dagScheduler_=(ds: DAGScheduler): Unit = {
+    _dagScheduler = ds
+  }
 
   private val nextRddId = new AtomicInteger(0)
 
@@ -117,6 +126,18 @@ class SparkContext(config: SparkConf) extends Logging {
   private[spark] def withScope[U](body: => U): U = RDDOperationScope.withScope[U](this)(body)
 
   /**
+    * Capture the current user callsite and return a formatted version for printing. If the user
+    * has overridden the call site using `setCallSite()`, this will return the user's version.
+    */
+  private[spark] def getCallSite(): CallSite = {
+    lazy val callSite = Utils.getCallSite()
+    CallSite(
+      Option(getLocalProperty(CallSite.SHORT_FORM)).getOrElse(callSite.shortForm),
+      Option(getLocalProperty(CallSite.LONG_FORM)).getOrElse(callSite.longForm)
+    )
+  }
+
+  /**
     * Clean a closure to make it ready to be serialized and sent to tasks
     * (removes unreferenced variables in $outer's, updates REPL variables)
     * If <tt>checkSerializable</tt> is set, <tt>clean</tt> will also proactively
@@ -175,18 +196,73 @@ class SparkContext(config: SparkConf) extends Logging {
     FileSystem.getLocal(hadoopConfiguration)
 
     // A Hadoop configuration can be about 10 KB, which is pretty big, so broadcast it.
-    val confBroadcast = new SerializableConfiguration(hadoopConfiguration)
+    val conf = new SerializableConfiguration(hadoopConfiguration)
     val setInputPathsFunc = (jobConf: JobConf) => FileInputFormat.setInputPaths(jobConf, path)
     new HadoopRDD(
       this,
-      confBroadcast,
+      conf,
       Some(setInputPathsFunc),
       inputFormatClass,
       keyClass,
       valueClass,
       minPartitions).setName(path)
   }
+  /**
+    * Run a job on all partitions in an RDD and pass the results to a handler function.
+    *
+    * @param rdd target RDD to run tasks on
+    * @param processPartition a function to run on each partition of the RDD
+    * @param resultHandler callback to pass each result to
+    */
+  def runJob[T, U: ClassTag](
+                              rdd: RDD[T],
+                              processPartition: Iterator[T] => U,
+                              resultHandler: (Int, U) => Unit){
+    val processFunc = (context: TaskContext, iter: Iterator[T]) => processPartition(iter)
+    runJob[T, U](rdd, processFunc, 0 until rdd.partitions.length, resultHandler)
+  }
 
+  /**
+    * Run a function on a given set of partitions in an RDD and pass the results to the given
+    * handler function. This is the main entry point for all actions in Spark.
+    *
+    * @param rdd target RDD to run tasks on
+    * @param func a function to run on each partition of the RDD
+    * @param partitions set of partitions to run on; some jobs may not want to compute on all
+    * partitions of the target RDD, e.g. for operations like `first()`
+    * @param resultHandler callback to pass each result to
+    */
+  def runJob[T, U: ClassTag](
+                              rdd: RDD[T],
+                              func: (TaskContext, Iterator[T]) => U,
+                              partitions: Seq[Int],
+                              resultHandler: (Int, U) => Unit): Unit = {
+    val callSite = getCallSite
+    val cleanedFunc = clean(func)
+    logInfo("Starting job: " + callSite)
+    dagScheduler.runJob(rdd, cleanedFunc, partitions, callSite, resultHandler, localProperties.get)
+    rdd.doCheckpoint()
+  }
+
+  /**
+    * Run a function on a given set of partitions in an RDD and return the results as an array.
+    * The function that is run against each partition additionally takes `TaskContext` argument.
+    *
+    * @param rdd target RDD to run tasks on
+    * @param func a function to run on each partition of the RDD
+    * @param partitions set of partitions to run on; some jobs may not want to compute on all
+    * partitions of the target RDD, e.g. for operations like `first()`
+    * @return in-memory collection with a result of the job (each collection element will contain
+    * a result from one partition)
+    */
+  def runJob[T, U: ClassTag](
+                              rdd: RDD[T],
+                              func: (TaskContext, Iterator[T]) => U,
+                              partitions: Seq[Int]): Array[U] = {
+    val results = new Array[U](partitions.size)
+    runJob[T, U](rdd, func, partitions, (index, res) => results(index) = res)
+    results
+  }
 }
 /**
   * The SparkContext object contains a number of implicit conversions and parameters for use with

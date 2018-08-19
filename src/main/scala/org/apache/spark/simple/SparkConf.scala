@@ -47,6 +47,18 @@ class SparkConf(loadDefaults: Boolean) extends Cloneable with Logging with Seria
     this
   }
 
+  /** Get a parameter as a boolean, falling back to a default if not set */
+  def getBoolean(key: String, defaultValue: Boolean): Boolean = {
+    getOption(key).map(_.toBoolean).getOrElse(defaultValue)
+  }
+
+  /** Does the configuration contain a given parameter? */
+  def contains(key: String): Boolean = {
+    settings.containsKey(key)
+  }
+
+  private[spark] def contains(entry: ConfigEntry[_]): Boolean = contains(entry.key)
+
   /** Copy this object */
   override def clone: SparkConf = {
     val cloned = new SparkConf(false)

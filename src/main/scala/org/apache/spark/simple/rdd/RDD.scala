@@ -3,7 +3,8 @@ package org.apache.spark.simple.rdd
 import org.apache.spark.internal.Logging
 import org.apache.spark.simple.{Dependency, SparkContext}
 import org.apache.spark.simple.TaskContext.TaskContext
-import org.apache.spark.{Partition, SparkException}
+import org.apache.spark.storage.StorageLevel
+import org.apache.spark.{Partition, Partitioner, SparkException}
 
 import scala.reflect.ClassTag
 
@@ -42,14 +43,47 @@ abstract class RDD[T](@transient private var _sc: SparkContext
 
   private[spark] var checkpointData: Option[RDDCheckpointData[T]] = None
 
+  private[spark] def conf = sc.conf
+
+  /** The [[org.apache.spark.SparkContext]] that this RDD was created on. */
+  def context: SparkContext = sc
+
+  /** The SparkContext that created this RDD. */
+  def sparkContext: SparkContext = sc
+
+  // =======================================================================
+  // Other internal methods and fields
+  // =======================================================================
+
+  private var storageLevel: StorageLevel = StorageLevel.NONE
+
+  /** Get the RDD's current storage level, or StorageLevel.NONE if none is set. */
+  def getStorageLevel: StorageLevel = storageLevel
+
   /** Assign a name to this RDD */
   def setName(_name: String): this.type = {
     name = _name
     this
   }
 
-  /** The [[org.apache.spark.SparkContext]] that this RDD was created on. */
-  def context: SparkContext = sc
+  /**
+    * Return whether this RDD is marked for local checkpointing.
+    * Exposed for testing.
+    */
+  private[rdd] def isLocallyCheckpointed: Boolean = {
+    checkpointData match {
+      case Some(_: LocalRDDCheckpointData[T]) => true
+      case _ => false
+    }
+  }
+
+  /**
+    * Return whether this RDD is checkpointed and materialized, either reliably or locally.
+    * This is introduced as an alias for `isCheckpointed` to clarify the semantics of the
+    * return value. Exposed for testing.
+    */
+  private[spark] def isCheckpointedAndMaterialized: Boolean =
+    checkpointData.exists(_.isCheckpointed)
 
   /**
     * Execute a block of code in a scope such that all new RDDs created in this body will
@@ -68,6 +102,24 @@ abstract class RDD[T](@transient private var _sc: SparkContext
   protected def clearDependencies(): Unit = {
     dependencies_ = null
   }
+
+  /**
+    * Optionally overridden by subclasses to specify placement preferences.
+    */
+  protected def getPreferredLocations(split: Partition): Seq[String] = Nil
+  /**
+    * Gets the name of the directory to which this RDD was checkpointed.
+    * This is not defined if the RDD is checkpointed locally.
+    */
+  def getCheckpointFile: Option[String] = {
+    checkpointData match {
+      case Some(reliable: ReliableRDDCheckpointData[T]) => reliable.getCheckpointDir
+      case _ => None
+    }
+  }
+
+  /** Optionally overridden by subclasses to specify how they are partitioned. */
+  @transient val partitioner: Option[Partitioner] = None
 
   /** An Option holding our checkpoint RDD, if we are checkpointed */
   private def checkpointRDD: Option[CheckpointRDD[T]] = checkpointData.flatMap(_.checkpointRDD)
@@ -109,17 +161,9 @@ abstract class RDD[T](@transient private var _sc: SparkContext
     RDDOperationScope.withScope(sc, "checkpoint", allowNesting = false, ignoreParent = true) {
       if (!doCheckpointCalled) {
         doCheckpointCalled = true
-        if (checkpointData.isDefined) {
-          if (checkpointAllMarkedAncestors) {
-            // TODO We can collect all the RDDs that needs to be checkpointed, and then checkpoint
-            // them in parallel.
-            // Checkpoint parents first because our lineage will be truncated after we
-            // checkpoint ourselves
-            dependencies.foreach(_.rdd.doCheckpoint())
-          }
-          checkpointData.get.checkpoint()
-        } else {
-          dependencies.foreach(_.rdd.doCheckpoint())
+        checkpointData match {
+          case Some(data) => data.checkpoint()
+          case None => dependencies.foreach(_.rdd.doCheckpoint())
         }
       }
     }
@@ -161,14 +205,6 @@ abstract class RDD[T](@transient private var _sc: SparkContext
     * The checkpoint directory set through `SparkContext#setCheckpointDir` is not used.
     */
   def localCheckpoint(): this.type = RDDCheckpointData.synchronized {
-    if (conf.getBoolean("spark.dynamicAllocation.enabled", false) &&
-      conf.contains("spark.dynamicAllocation.cachedExecutorIdleTimeout")) {
-      logWarning("Local checkpointing is NOT safe to use with dynamic allocation, " +
-        "which removes executors along with their cached blocks. If you must use both " +
-        "features, you are advised to set `spark.dynamicAllocation.cachedExecutorIdleTimeout` " +
-        "to a high value. E.g. If you plan to use the RDD for 1 hour, set the timeout to " +
-        "at least 1 hour.")
-    }
 
     // Note: At this point we do not actually know whether the user will call persist() on
     // this RDD later, so we must explicitly call it here ourselves to ensure the cached
@@ -202,6 +238,23 @@ abstract class RDD[T](@transient private var _sc: SparkContext
     }
     this
   }
+
+  /**
+    * Set this RDD's storage level to persist its values across operations after the first time
+    * it is computed. This can only be used to assign a new storage level if the RDD does not
+    * have a storage level set yet. Local checkpointing is an exception.
+    */
+  def persist(newLevel: StorageLevel): this.type = {
+    if (isLocallyCheckpointed) {
+      // This means the user previously called localCheckpoint(), which should have already
+      // marked this RDD for persisting. Here we should override the old storage level with
+      // one that is explicitly requested by the user (after adapting it to use disk).
+      persist(LocalRDDCheckpointData.transformStorageLevel(newLevel), allowOverride = true)
+    } else {
+      persist(newLevel, allowOverride = false)
+    }
+  }
+
   /**
     * Implemented by subclasses to return the set of partitions in this RDD. This method will only
     * be called once, so it is safe to implement a time-consuming computation in it.
