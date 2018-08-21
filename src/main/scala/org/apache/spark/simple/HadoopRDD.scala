@@ -3,6 +3,9 @@ package org.apache.spark.simple
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.mapred._
 import org.apache.hadoop.util.ReflectionUtils
+import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.deploy.SparkHadoopUtil
+import org.apache.spark.rdd.HadoopPartition
 import org.apache.spark.simple.TaskContext.TaskContext
 import org.apache.spark.simple.rdd.RDD
 import org.apache.spark.util.{NextIterator, SerializableConfiguration}
@@ -23,13 +26,13 @@ private[spark] class HadoopPartition(rddId: Int, override val index: Int, s: Inp
 }
 
 class HadoopRDD[K, V](sc: SparkContext
-                      , conf: SerializableConfiguration
+                      , broadcastedConf: Broadcast[SerializableConfiguration]
                       , initLocalJobConfFuncOpt: Option[JobConf => Unit]
                       , inputFormatClass: Class[_ <: InputFormat[K, V]]
                       , keyClass: Class[K]
                       , valueClass: Class[V]
                       , minPartitions: Int
-                     ) extends RDD[(K, V)](sc) {
+                     ) extends RDD[(K, V)](sc, Nil) {
   def this(sc: SparkContext
            , conf: SparkConf
            , initLocalJobConfFuncOpt: Option[JobConf => Unit]
@@ -40,7 +43,7 @@ class HadoopRDD[K, V](sc: SparkContext
           ) = {
     this(
       sc
-      , new SerializableConfiguration(conf.asInstanceOf[Configuration])
+      , sc.broadcast(new SerializableConfiguration(conf.asInstanceOf[Configuration]) )
       , initLocalJobConfFuncOpt
       , inputFormatClass
       , keyClass
@@ -97,7 +100,7 @@ class HadoopRDD[K, V](sc: SparkContext
 
   // Returns a JobConf that will be used on slaves to obtain input splits for Hadoop reads.
   protected def getJobConf(): JobConf = {
-    this.conf.value match {
+    this.broadcastedConf.value.value match {
       case conf: JobConf =>
         logDebug("Re-using user-broadcasted JobConf")
         conf.asInstanceOf[JobConf]
@@ -137,4 +140,18 @@ class HadoopRDD[K, V](sc: SparkContext
       .asInstanceOf[InputFormat[K, V]]
   }
 
+
+
+  override def getPartitions: Array[Partition] = {
+    val jobConf = getJobConf()
+    // add the credentials here as this can be called before SparkContext initialized
+    SparkHadoopUtil.get.addCredentials(jobConf)
+    val allInputSplits = getInputFormat(jobConf).getSplits(jobConf, minPartitions)
+    val inputSplits = allInputSplits.filter(_.getLength > 0)
+    val array = new Array[Partition](inputSplits.size)
+    for (i <- 0 until inputSplits.size) {
+      array(i) = new HadoopPartition(id, i, inputSplits(i))
+    }
+    array
+  }
 }

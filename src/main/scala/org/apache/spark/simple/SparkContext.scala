@@ -9,14 +9,17 @@ import org.apache.hadoop.fs.FileSystem
 import org.apache.hadoop.io.{LongWritable, Text}
 import org.apache.hadoop.mapred.{FileInputFormat, InputFormat, JobConf, TextInputFormat}
 import org.apache.spark.SparkException
+import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.simple.rdd.{RDD, RDDOperationScope}
 import org.apache.spark.simple.deploy.SparkHadoopUtil
 import org.apache.spark.scheduler.TaskScheduler
 import org.apache.spark.simple.TaskContext.TaskContext
 import org.apache.spark.simple.scheduler.DAGScheduler
-import org.apache.spark.util.{CallSite, ClosureCleaner, SerializableConfiguration, Utils}
+import org.apache.spark.simple.util.Utils
+import org.apache.spark.util.{CallSite, ClosureCleaner, SerializableConfiguration}
 
+import scala.reflect.{ClassTag, classTag}
 import scala.reflect.ClassTag
 
 class SparkContext(config: SparkConf) extends Logging {
@@ -32,10 +35,15 @@ class SparkContext(config: SparkConf) extends Logging {
   private var _hadoopConfiguration: Configuration = _
   private var _taskScheduler: TaskScheduler = _
   @volatile private var _dagScheduler: DAGScheduler = _
+  private var _env: SparkEnv = _
 
   try {
     _conf = config.clone()
     _hadoopConfiguration = SparkHadoopUtil.get.newConfiguration(_conf)
+
+    // Create the Spark execution environment (cache, map output tracker, etc)
+    _env = createSparkEnv(_conf, isLocal)
+    SparkEnv.set(_env)
   } catch {
     case e: Throwable =>
       logError("Error initializing SparkContext.", e)
@@ -54,11 +62,19 @@ class SparkContext(config: SparkConf) extends Logging {
   private[spark] def dagScheduler_=(ds: DAGScheduler): Unit = {
     _dagScheduler = ds
   }
+  def isLocal: Boolean = Utils.isLocalMaster(_conf)
 
   private val nextRddId = new AtomicInteger(0)
 
   /** Register a new RDD, returning its RDD ID */
   private[spark] def newRddId(): Int = nextRddId.getAndIncrement()
+
+  // This function allows components created by SparkEnv to be mocked in unit tests:
+  private[spark] def createSparkEnv(
+                                     conf: SparkConf,
+                                     isLocal: Boolean): SparkEnv = {
+    SparkEnv.createDriverEnv(conf, isLocal, SparkContext.numDriverCores(master))
+  }
 
   /**
     * A default Hadoop Configuration for the Hadoop code (e.g. file systems) that we reuse.
@@ -67,6 +83,8 @@ class SparkContext(config: SparkConf) extends Logging {
     * plan to set some global configurations for all Hadoop RDDs.
     */
   def hadoopConfiguration: Configuration = _hadoopConfiguration
+
+  private[spark] def env: SparkEnv = _env
 
   /** Default level of parallelism to use when not given by user (e.g. parallelize and makeRDD). */
   def defaultParallelism: Int = {
@@ -154,6 +172,22 @@ class SparkContext(config: SparkConf) extends Logging {
     ClosureCleaner.clean(f, checkSerializable)
     f
   }
+  /**
+    * Broadcast a read-only variable to the cluster, returning a
+    * [[org.apache.spark.broadcast.Broadcast]] object for reading it in distributed functions.
+    * The variable will be sent to each cluster only once.
+    *
+    * @param value value to broadcast to the Spark nodes
+    * @return `Broadcast` object, a read-only variable cached on each machine
+    */
+  def broadcast[T: ClassTag](value: T): Broadcast[T] = {
+    require(!classOf[RDD[_]].isAssignableFrom(classTag[T].runtimeClass),
+      "Can not directly broadcast RDDs; instead, call collect() and broadcast the result.")
+    val bc = env.broadcastManager.newBroadcast[T](value, isLocal)
+    val callSite = getCallSite
+    logInfo("Created broadcast " + bc.id + " from " + callSite.shortForm)
+    bc
+  }
 
   /**
     * Read a text file from HDFS, a local file system (available on all nodes), or any
@@ -196,11 +230,11 @@ class SparkContext(config: SparkConf) extends Logging {
     FileSystem.getLocal(hadoopConfiguration)
 
     // A Hadoop configuration can be about 10 KB, which is pretty big, so broadcast it.
-    val conf = new SerializableConfiguration(hadoopConfiguration)
+    val confBroadcast = broadcast(new SerializableConfiguration(hadoopConfiguration))
     val setInputPathsFunc = (jobConf: JobConf) => FileInputFormat.setInputPaths(jobConf, path)
     new HadoopRDD(
       this,
-      conf,
+      confBroadcast,
       Some(setInputPathsFunc),
       inputFormatClass,
       keyClass,

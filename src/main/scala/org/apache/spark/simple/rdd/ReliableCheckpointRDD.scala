@@ -4,10 +4,12 @@ import java.io.{FileNotFoundException, IOException}
 import java.util.concurrent.TimeUnit
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.{Partition, Partitioner, SparkException}
 import org.apache.spark.internal.Logging
 import org.apache.spark.simple.{SparkContext, SparkEnv}
 import org.apache.spark.simple.TaskContext.TaskContext
+import org.apache.spark.simple.io.CompressionCodec
 import org.apache.spark.util.{SerializableConfiguration, Utils}
 
 import scala.reflect.ClassTag

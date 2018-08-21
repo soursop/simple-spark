@@ -4,6 +4,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{ConfigEntry, ConfigProvider, ConfigReader, SparkConfigProvider}
+import org.apache.spark.simple.util.Utils
 
 import scala.collection.JavaConverters._
 
@@ -45,6 +46,28 @@ class SparkConf(loadDefaults: Boolean) extends Cloneable with Logging with Seria
     }
     settings.put(key, value)
     this
+  }
+
+  /**
+    * Get a size parameter as Kibibytes; throws a NoSuchElementException if it's not set. If no
+    * suffix is provided then Kibibytes are assumed.
+    * @throws java.util.NoSuchElementException If the size parameter is not set
+    */
+  def getSizeAsKb(key: String): Long = {
+    Utils.byteStringAsKb(get(key))
+  }
+
+  /**
+    * Get a size parameter as Kibibytes, falling back to a default if not set. If no
+    * suffix is provided then Kibibytes are assumed.
+    */
+  def getSizeAsKb(key: String, defaultValue: String): Long = {
+    Utils.byteStringAsKb(get(key, defaultValue))
+  }
+
+  /** Get a parameter as an integer, falling back to a default if not set */
+  def getInt(key: String, defaultValue: Int): Int = {
+    getOption(key).map(_.toInt).getOrElse(defaultValue)
   }
 
   /** Get a parameter as a boolean, falling back to a default if not set */

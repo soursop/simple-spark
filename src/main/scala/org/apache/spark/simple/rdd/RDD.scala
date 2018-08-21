@@ -1,12 +1,12 @@
 package org.apache.spark.simple.rdd
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.simple.{Dependency, SparkContext}
+import org.apache.spark.simple._
 import org.apache.spark.simple.TaskContext.TaskContext
-import org.apache.spark.storage.StorageLevel
+import org.apache.spark.storage.{RDDBlockId, StorageLevel}
 import org.apache.spark.{Partition, Partitioner, SparkException}
 
-import scala.reflect.ClassTag
+import scala.reflect.{ClassTag, classTag}
 
 abstract class RDD[T](@transient private var _sc: SparkContext
                      , @transient private var deps: Seq[Dependency[_]]
@@ -76,6 +76,8 @@ abstract class RDD[T](@transient private var _sc: SparkContext
       case _ => false
     }
   }
+
+  private[spark] def elementClassTag: ClassTag[T] = classTag[T]
 
   /**
     * Return whether this RDD is checkpointed and materialized, either reliably or locally.
@@ -147,9 +149,60 @@ abstract class RDD[T](@transient private var _sc: SparkContext
     }
   }
 
+  /**
+    * Internal method to this RDD; will read from cache if applicable, or otherwise compute it.
+    * This should ''not'' be called by users directly, but is available for implementors of custom
+    * subclasses of RDD.
+    */
+  final def iterator(split: Partition, context: TaskContext): Iterator[T] = {
+    if (storageLevel != StorageLevel.NONE) {
+      getOrCompute(split, context)
+    } else {
+      computeOrReadCheckpoint(split, context)
+    }
+  }
+
   /** Returns the first parent RDD */
   protected[spark] def firstParent[U: ClassTag]: RDD[U] = {
     dependencies.head.rdd.asInstanceOf[RDD[U]]
+  }
+
+  /**
+    * Compute an RDD partition or read it from a checkpoint if the RDD is checkpointing.
+    */
+  private[spark] def computeOrReadCheckpoint(split: Partition, context: TaskContext): Iterator[T] =
+  {
+    if (isCheckpointedAndMaterialized) {
+      firstParent[T].iterator(split, context)
+    } else {
+      compute(split, context)
+    }
+  }
+
+  /**
+    * Gets or computes an RDD partition. Used by RDD.iterator() when an RDD is cached.
+    */
+  private[spark] def getOrCompute(partition: Partition, context: TaskContext): Iterator[T] = {
+    val blockId = RDDBlockId(id, partition.index)
+    var readCachedBlock = true
+    // This method is called on executors, so we need call SparkEnv.get instead of sc.env.
+    SparkEnv.get.blockManager.getOrElseUpdate(blockId, storageLevel, elementClassTag, () => {
+      readCachedBlock = false
+      computeOrReadCheckpoint(partition, context)
+    }) match {
+      case Left(blockResult) =>
+        if (readCachedBlock) {
+          new InterruptibleIterator[T](context, blockResult.data.asInstanceOf[Iterator[T]]) {
+            override def next(): T = {
+              delegate.next()
+            }
+          }
+        } else {
+          new InterruptibleIterator(context, blockResult.data.asInstanceOf[Iterator[T]])
+        }
+      case Right(iter) =>
+        new InterruptibleIterator(context, iter.asInstanceOf[Iterator[T]])
+    }
   }
 
   /**
@@ -279,6 +332,22 @@ abstract class RDD[T](@transient private var _sc: SparkContext
       }
       partitions_
     }
+  }
+
+  /**
+    * Mark this RDD for persisting using the specified level.
+    *
+    * @param newLevel the target storage level
+    * @param allowOverride whether to override any existing level with the new one
+    */
+  private def persist(newLevel: StorageLevel, allowOverride: Boolean): this.type = {
+    // TODO: Handle changes of StorageLevel
+    if (storageLevel != StorageLevel.NONE && newLevel != storageLevel && !allowOverride) {
+      throw new UnsupportedOperationException(
+        "Cannot change storage level of an RDD after it was already assigned a level")
+    }
+    storageLevel = newLevel
+    this
   }
 
   /**
