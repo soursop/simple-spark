@@ -36,5 +36,24 @@ object TaskContext {
       * If the task is interrupted, throws TaskKilledException with the reason for the interrupt.
       */
     private[spark] def killTaskIfInterrupted(): Unit
+    /**
+      * How many times this task has been attempted.  The first task attempt will be assigned
+      * attemptNumber = 0, and subsequent attempts will have increasing attempt numbers.
+      */
+    def attemptNumber(): Int
+    /**
+      * Adds a listener in the form of a Scala closure to be executed on task completion.
+      * This will be called in all situations - success, failure, or cancellation. Adding a listener
+      * to an already completed task will result in that listener being called immediately.
+      *
+      * An example use is for HadoopRDD to register a callback to close the input stream.
+      *
+      * Exceptions thrown by the listener will result in failure of the task.
+      */
+    def addTaskCompletionListener(f: (TaskContext) => Unit): TaskContext = {
+      addTaskCompletionListener(new TaskCompletionListener {
+        override def onTaskCompletion(context: TaskContext): Unit = f(context)
+      })
+    }
   }
 }

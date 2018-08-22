@@ -10,7 +10,8 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.simple.{SparkContext, SparkEnv}
 import org.apache.spark.simple.TaskContext.TaskContext
 import org.apache.spark.simple.io.CompressionCodec
-import org.apache.spark.util.{SerializableConfiguration, Utils}
+import org.apache.spark.simple.util.Utils
+import org.apache.spark.util.SerializableConfiguration
 
 import scala.reflect.ClassTag
 import scala.util.control.NonFatal
@@ -162,12 +163,7 @@ private[spark] object ReliableCheckpointRDD extends Logging {
     val bufferSize = env.conf.getInt("spark.buffer.size", 65536)
 
     val fileOutputStream = if (blockSize < 0) {
-      val fileStream = fs.create(tempOutputPath, false, bufferSize)
-      if (env.conf.get(CHECKPOINT_COMPRESS)) {
-        CompressionCodec.createCodec(env.conf).compressedOutputStream(fileStream)
-      } else {
-        fileStream
-      }
+      fs.create(tempOutputPath, false, bufferSize)
     } else {
       // This is mainly for testing purpose
       fs.create(tempOutputPath, false, bufferSize,
@@ -272,12 +268,7 @@ private[spark] object ReliableCheckpointRDD extends Logging {
     val fs = path.getFileSystem(broadcastedConf.value.value)
     val bufferSize = env.conf.getInt("spark.buffer.size", 65536)
     val fileInputStream = {
-      val fileStream = fs.open(path, bufferSize)
-      if (env.conf.get(CHECKPOINT_COMPRESS)) {
-        CompressionCodec.createCodec(env.conf).compressedInputStream(fileStream)
-      } else {
-        fileStream
-      }
+      fs.open(path, bufferSize)
     }
     val serializer = env.serializer.newInstance()
     val deserializeStream = serializer.deserializeStream(fileInputStream)

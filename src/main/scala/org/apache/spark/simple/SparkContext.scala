@@ -257,6 +257,19 @@ class SparkContext(config: SparkConf) extends Logging {
   }
 
   /**
+    * Run a job on all partitions in an RDD and return the results in an array. The function
+    * that is run against each partition additionally takes `TaskContext` argument.
+    *
+    * @param rdd target RDD to run tasks on
+    * @param func a function to run on each partition of the RDD
+    * @return in-memory collection with a result of the job (each collection element will contain
+    * a result from one partition)
+    */
+  def runJob[T, U: ClassTag](rdd: RDD[T], func: (TaskContext, Iterator[T]) => U): Array[U] = {
+    runJob(rdd, func, 0 until rdd.partitions.length)
+  }
+
+  /**
     * Run a function on a given set of partitions in an RDD and pass the results to the given
     * handler function. This is the main entry point for all actions in Spark.
     *
