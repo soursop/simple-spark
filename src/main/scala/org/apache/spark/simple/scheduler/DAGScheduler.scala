@@ -15,7 +15,7 @@ import scala.concurrent.duration.Duration
 private[spark]
 class DAGScheduler(
         private[scheduler] val sc: SparkContext,
-        private[scheduler] val taskScheduler: TaskSchedule
+        private[scheduler] val taskScheduler: TaskSchedule)
       extends Logging {
 
   private[scheduler] val eventProcessLoop = new DAGSchedulerEventProcessLoop(this)

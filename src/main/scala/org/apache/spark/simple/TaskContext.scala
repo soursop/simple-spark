@@ -1,5 +1,7 @@
 package org.apache.spark.simple
 
+import org.apache.spark.simple.util.TaskCompletionListener
+
 object TaskContext {
   /**
     * Return the currently active TaskContext. This can be called inside of
@@ -41,6 +43,18 @@ object TaskContext {
       * attemptNumber = 0, and subsequent attempts will have increasing attempt numbers.
       */
     def attemptNumber(): Int
+
+    /**
+      * Adds a (Java friendly) listener to be executed on task completion.
+      * This will be called in all situations - success, failure, or cancellation. Adding a listener
+      * to an already completed task will result in that listener being called immediately.
+      *
+      * An example use is for HadoopRDD to register a callback to close the input stream.
+      *
+      * Exceptions thrown by the listener will result in failure of the task.
+      */
+    def addTaskCompletionListener(listener: TaskCompletionListener): TaskContext
+
     /**
       * Adds a listener in the form of a Scala closure to be executed on task completion.
       * This will be called in all situations - success, failure, or cancellation. Adding a listener

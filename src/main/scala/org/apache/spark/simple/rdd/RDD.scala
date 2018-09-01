@@ -8,7 +8,7 @@ import org.apache.spark.{Partition, Partitioner, SparkException}
 
 import scala.reflect.{ClassTag, classTag}
 
-abstract class RDD[T](@transient private var _sc: SparkContext
+abstract class RDD[T: ClassTag](@transient private var _sc: SparkContext
                      , @transient private var deps: Seq[Dependency[_]]
                      ) extends Serializable with Logging {
   private def sc: SparkContext = {
